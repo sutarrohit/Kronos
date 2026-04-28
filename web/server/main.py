@@ -1,26 +1,35 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from scalar_fastapi import get_scalar_api_reference
 
-from schemas.prediction import (
-    PricePredictionRequest,
-    PricePredictionResponse,
-    PredictionOptionsResponse,
-)
-from errors.errors  import PredictionAPIError
-from services.price_prediction import PricePredictionService
-from services.batch_price_prediction_service import BatchPricePredictionService
+from db.migrations import run_migrations
+from errors.errors import PredictionAPIError
+from routers import prediction, results
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Run DB migrations on startup."""
+    run_migrations()
+    yield
+
 
 app = FastAPI(
     title="Kronos Prediction Server",
     description="Fetch OHLCV data and predict future prices with selectable Kronos models.",
     version="0.1.0",
+    lifespan=lifespan,
 )
+
+# Include Routers
+app.include_router(prediction.router, prefix="/api", tags=["Prediction"])
+app.include_router(results.router, prefix="/api", tags=["Results"])
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,8 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-prediction_service = PricePredictionService()
-batch_prediction_service = BatchPricePredictionService()
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,25 +86,6 @@ def health():
 @app.get("/scalar", include_in_schema=False)
 async def scalar_html():
     return get_scalar_api_reference(
-        # Your OpenAPI document
-        openapi_url=app.openapi_url,
-        # Avoid CORS issues (optional)
-        scalar_proxy_url="https://proxy.scalar.com",
+        openapi_url=app.openapi_url,  # Your OpenAPI document
+        scalar_proxy_url="https://proxy.scalar.com",  # Avoid CORS issues (optional)
     )
-
-
-@app.get("/prediction/options", response_model=PredictionOptionsResponse)
-def prediction_options() -> PredictionOptionsResponse:
-    return prediction_service.get_options()
-
-
-@app.post("/prediction/price", response_model=PricePredictionResponse)
-def predict_price(request: PricePredictionRequest) -> PricePredictionResponse:
-    return prediction_service.predict_price(request)
-
-
-@app.post("/prediction/price/batch", response_model=list[PricePredictionResponse])
-def predict_price(
-    request: list[PricePredictionRequest],
-) -> list[PricePredictionResponse]:
-    return batch_prediction_service.predict_batch(request)
